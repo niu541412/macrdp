@@ -14,6 +14,12 @@ fn main() {
         return;
     }
 
+    // Xcode 10.1 has neither the modern IOUSBHost UserHCI header nor the
+    // ScreenCaptureKit Swift runtime. The legacy build uses neither one.
+    if std::env::var_os("CARGO_FEATURE_LEGACY_CAPTURE").is_some() {
+        return;
+    }
+
     // Compile the USB-redirection Obj-C shim (Phase-1b UserHCI spike) and link
     // the public IOUSBHost framework. macOS-only; the module's non-macOS stub
     // never references the extern, so Linux CI builds without any of this.

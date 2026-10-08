@@ -8,6 +8,11 @@
     allow(dead_code, unused_imports, unused_variables, unused_mut)
 )]
 
+#[cfg(all(feature = "legacy-capture", feature = "modern-capture"))]
+compile_error!("build with --no-default-features --features legacy-capture for macOS 10.13");
+#[cfg(not(any(feature = "legacy-capture", feature = "modern-capture")))]
+compile_error!("select a capture backend: legacy-capture or modern-capture");
+
 mod aac;
 mod audin;
 mod audio;
@@ -158,7 +163,7 @@ fn primary_screen_geometry() -> ((f64, f64), (f64, f64)) {
     ((0.0, 0.0), (0.0, 0.0))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "modern-capture"))]
 fn ensure_screen_recording_access() {
     use core_graphics::access::ScreenCaptureAccess;
     let tcc = ScreenCaptureAccess;
@@ -175,6 +180,9 @@ fn ensure_screen_recording_access() {
     // returned bool reflects current state, which is still false on first run.
     let _ = tcc.request();
 }
+
+#[cfg(all(target_os = "macos", feature = "legacy-capture"))]
+fn ensure_screen_recording_access() {}
 
 #[derive(Parser, Debug)]
 #[command(name = "macrdp", about = "Native RDP server for macOS")]
@@ -564,6 +572,11 @@ struct Args {
     /// the encoder.
     #[arg(long, default_value_t = 128_000)]
     aac_bitrate: u32,
+
+    /// On macOS 10.13, capture a named loopback input device without changing
+    /// CoreAudio's global default input. For example: OrayVirtualAudioDevice.
+    #[arg(long)]
+    legacy_audio_device: Option<String>,
 
     /// Enable RDPDR drive redirection (MS-RDPEFS): the connecting client
     /// redirects its local drive(s) and the Mac mounts each as a real
@@ -2585,6 +2598,20 @@ async fn async_main() -> Result<()> {
         args = args_from_config(&cfg_path)?;
     }
 
+    #[cfg(feature = "legacy-capture")]
+    {
+        if args.virtual_display {
+            return Err(anyhow!(
+                "macOS 10.13 has no CGVirtualDisplay; create a separate user desktop with Screen Sharing, then start macrdp in that user's GUI session"
+            ));
+        }
+        if args.enable_h264 {
+            return Err(anyhow!(
+                "--enable-h264 is not wired to the legacy CoreGraphics capture backend; use bitmap mode"
+            ));
+        }
+    }
+
     // Research spike (Phase-1b USB-redirection go/no-go): run the UserHCI probe
     // and exit before any server/auth/capture setup. Requires the signed+
     // provisioned entitled build; see src/usb_redirect/.
@@ -3365,6 +3392,7 @@ async fn async_main() -> Result<()> {
         // / --capture-primary (which disable/capture the physical panel) don't
         // kill the audio stream's content source.
         capture_display_id,
+        args.legacy_audio_device.clone(),
     ));
 
     // with_hybrid advertises HYBRID | HYBRID_EX so clients run CredSSP/NLA

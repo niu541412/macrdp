@@ -184,7 +184,7 @@ fn drive_device(handle: UsbHandle) {
     });
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "modern-capture"))]
 mod imp {
     use std::collections::{HashMap, HashSet};
     use std::os::raw::{c_int, c_void};
@@ -660,12 +660,12 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(all(target_os = "macos", feature = "modern-capture")))]
 mod imp {
     use ironrdp_server::UsbHandle;
 
     pub fn run_spike() -> i32 {
-        eprintln!("--usb-spike is macOS-only");
+        eprintln!("--usb-spike requires the modern macOS build");
         1
     }
 

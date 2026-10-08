@@ -42,7 +42,7 @@ __bench = ["dep:visibility"]
 [dependencies]
 anyhow = "1.0"
 tokio = { version = "1", features = ["net", "macros", "sync", "rt"] } # public
-tokio-rustls = "0.26" # public
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] } # public
 async-trait = "0.1"
 # path = "../ironrdp-*" entries dropped — we live outside the upstream
 # workspace, so cargo resolves these via the root macrdp Cargo.toml's

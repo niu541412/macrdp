@@ -463,6 +463,19 @@ pub(crate) use macos::gather_windows_onto_display;
 
 #[cfg(target_os = "macos")]
 mod macos {
+    // On High Sierra, B's Screen Sharing desktop is a separate Aqua session.
+    // HID-level injection follows the physical console, while the session tap
+    // delivers synthetic input to the GUI session that owns this process.
+    fn input_tap() -> core_graphics::event::CGEventTapLocation {
+        #[cfg(feature = "legacy-capture")]
+        {
+            core_graphics::event::CGEventTapLocation::Session
+        }
+        #[cfg(not(feature = "legacy-capture"))]
+        {
+            core_graphics::event::CGEventTapLocation::HID
+        }
+    }
     use std::collections::HashSet;
     use std::process::Command;
     use std::time::{Duration, Instant};
@@ -1218,7 +1231,7 @@ mod macos {
                                 CGEvent::new_keyboard_event(self.source.clone(), 0, true)
                             {
                                 ev.set_string_from_utf16_unchecked(&utf16);
-                                ev.post(CGEventTapLocation::HID);
+                                ev.post(input_tap());
                             }
                         }
                     }
@@ -1238,7 +1251,7 @@ mod macos {
                 flags |= CGEventFlags::CGEventFlagNumericPad;
             }
             ev.set_flags(flags);
-            ev.post(CGEventTapLocation::HID);
+            ev.post(input_tap());
         }
 
         /// Emit a FlagsChanged event for `vk` from both sources. We send
@@ -1266,7 +1279,7 @@ mod macos {
                 };
                 ev.set_flags(flags);
                 ev.set_type(CGEventType::FlagsChanged);
-                ev.post(CGEventTapLocation::HID);
+                ev.post(input_tap());
             }
         }
 
@@ -1336,12 +1349,12 @@ mod macos {
                     };
                     ev.set_flags(swapped);
                     ev.set_type(CGEventType::FlagsChanged);
-                    ev.post(CGEventTapLocation::HID);
+                    ev.post(input_tap());
                 }
             }
             if let Ok(ev) = CGEvent::new_keyboard_event(self.source.clone(), vk, down) {
                 ev.set_flags(swapped);
-                ev.post(CGEventTapLocation::HID);
+                ev.post(input_tap());
             } else {
                 warn!(vk, "CGEvent::new_keyboard_event failed (ctrl→cmd key)");
             }
@@ -1520,7 +1533,7 @@ mod macos {
                 return;
             };
             ev.set_string_from_utf16_unchecked(&[c]);
-            ev.post(CGEventTapLocation::HID);
+            ev.post(input_tap());
         }
 
         pub fn mouse(
@@ -1618,7 +1631,7 @@ mod macos {
             // set — and so this path, which fires hundreds of times a second,
             // never evaluates the frontmost-app check itself.
             ev.set_flags(self.mouse_flags(self.left_down && self.left_click_remapped));
-            ev.post(CGEventTapLocation::HID);
+            ev.post(input_tap());
         }
 
         fn button(&mut self, button: CGMouseButton, down: bool) {
@@ -1705,7 +1718,7 @@ mod macos {
             // Windows-style Ctrl+click opens a link in a new tab (Cmd+click)
             // rather than firing a secondary/context click.
             ev.set_flags(self.mouse_flags(remapped));
-            ev.post(CGEventTapLocation::HID);
+            ev.post(input_tap());
 
             // On a button-down, record which app's window is under the cursor so
             // the Ctrl→Cmd suppression knows the real focus target — the only way
@@ -1748,7 +1761,7 @@ mod macos {
             // accessibility gesture — silently rewriting it to Cmd+scroll would
             // hijack a system binding.
             ev.set_flags(self.mods.cg_flags());
-            ev.post(CGEventTapLocation::HID);
+            ev.post(input_tap());
         }
     }
 
@@ -3640,9 +3653,9 @@ mod macos {
                     m.set_flags(CGEventFlags::empty());
                     d.set_flags(CGEventFlags::empty());
                     u.set_flags(CGEventFlags::empty());
-                    m.post(CGEventTapLocation::HID);
-                    d.post(CGEventTapLocation::HID);
-                    u.post(CGEventTapLocation::HID);
+                    m.post(input_tap());
+                    d.post(input_tap());
+                    u.post(input_tap());
                     debug!("ax_press_spotlight: mouse move+click posted");
                     true
                 }

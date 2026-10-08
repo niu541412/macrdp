@@ -48,6 +48,10 @@ Details and the path to closing the gaps: [docs/production-readiness-roadmap.md]
 
 ## Quick start
 
+For macOS 10.13, build the separate CoreGraphics backend and set up the
+background user's graphical session as described in
+[High Sierra setup](docs/macos-10.13.md).
+
 ```bash
 cargo build --release
 codesign -s - --force target/release/macrdp   # ad-hoc sign so TCC grants persist

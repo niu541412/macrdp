@@ -108,8 +108,14 @@ fn unpack_size(packed: u32) -> (u16, u16) {
 /// deactivation-reactivation (fresh SCK stream, resized framebuffer), so we
 /// wait for the drag to settle rather than resizing on every tick.
 pub const RESIZE_DEBOUNCE: Duration = Duration::from_millis(400);
+/// High Sierra's bitmap path can reactivate much faster than SCK. Apply the
+/// first live resize promptly, then coalesce a continuous drag to a few
+/// resizes per second. The final size follows shortly after the drag stops.
+const LEGACY_RESIZE_SETTLE: Duration = Duration::from_millis(100);
+const LEGACY_RESIZE_MIN_INTERVAL: Duration = Duration::from_millis(160);
+const LEGACY_RESIZE_MAX_INTERVAL: Duration = Duration::from_millis(300);
 
-/// A client-driven live-resize request (MS-RDPEDISP), debounced.
+/// A client-driven live-resize request (MS-RDPEDISP).
 /// `CaptureDisplay::request_layout` calls [`PendingResize::request`] on every
 /// monitor-layout PDU the client sends; the capture loop calls
 /// [`PendingResize::take_settled`] each iteration and only acts once
@@ -129,6 +135,9 @@ struct PendingResizeInner {
     /// Milliseconds since `epoch` of the last `request()` call; 0 = no
     /// pending request (never requested, or already consumed).
     last_update_ms: AtomicU64,
+    /// Last legacy resize applied; survives the RDP stream rebuild that a
+    /// deactivation-reactivation performs.
+    last_legacy_apply_ms: AtomicU64,
 }
 
 impl PendingResize {
@@ -138,6 +147,7 @@ impl PendingResize {
                 epoch: Instant::now(),
                 size: AtomicU32::new(0),
                 last_update_ms: AtomicU64::new(0),
+                last_legacy_apply_ms: AtomicU64::new(0),
             }),
         }
     }
@@ -185,6 +195,42 @@ impl PendingResize {
         {
             return None;
         }
+        Some(unpack_size(self.inner.size.load(Ordering::Relaxed)))
+    }
+
+    /// Legacy bitmap capture can apply the first request immediately. During
+    /// a drag, apply the latest size at most every 300 ms; after the drag stops,
+    /// apply the final size after 100 ms (subject to a 160 ms minimum gap).
+    /// The timestamp lives here rather than in the update stream because a
+    /// resize destroys and recreates that stream.
+    pub fn take_legacy_ready(&self) -> Option<(u16, u16)> {
+        let last_ms = self.inner.last_update_ms.load(Ordering::Relaxed);
+        if last_ms == 0 {
+            return None;
+        }
+        let now = self.now_ms().max(1);
+        let previous = self.inner.last_legacy_apply_ms.load(Ordering::Relaxed);
+        if previous != 0 {
+            let since_apply = now.saturating_sub(previous);
+            let since_request = now.saturating_sub(last_ms);
+            if since_apply < LEGACY_RESIZE_MIN_INTERVAL.as_millis() as u64
+                || (since_request < LEGACY_RESIZE_SETTLE.as_millis() as u64
+                    && since_apply < LEGACY_RESIZE_MAX_INTERVAL.as_millis() as u64)
+            {
+                return None;
+            }
+        }
+        if self
+            .inner
+            .last_update_ms
+            .compare_exchange(last_ms, 0, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return None;
+        }
+        self.inner
+            .last_legacy_apply_ms
+            .store(now, Ordering::Relaxed);
         Some(unpack_size(self.inner.size.load(Ordering::Relaxed)))
     }
 }
@@ -440,7 +486,7 @@ pub struct CaptureDisplay {
 /// mean Screen Recording permission is missing — that's a setup problem the
 /// user needs to see, not silently paper over.
 pub async fn primary_display_size() -> Result<Option<(u16, u16)>> {
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "modern-capture"))]
     {
         use anyhow::{anyhow, Context};
         use screencapturekit::async_api::AsyncSCShareableContent;
@@ -453,6 +499,14 @@ pub async fn primary_display_size() -> Result<Option<(u16, u16)>> {
         let w = u16::try_from(display.width()).context("display width > u16")?;
         let h = u16::try_from(display.height()).context("display height > u16")?;
         Ok(Some((w, h)))
+    }
+    #[cfg(all(target_os = "macos", not(feature = "modern-capture")))]
+    {
+        use core_graphics::display::CGDisplay;
+        let main = CGDisplay::main();
+        let w = u16::try_from(main.pixels_wide()).ok();
+        let h = u16::try_from(main.pixels_high()).ok();
+        Ok(w.zip(h).filter(|(w, h)| *w > 0 && *h > 0))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -552,8 +606,7 @@ impl RdpServerDisplay for CaptureDisplay {
     /// itself is re-moded to the requested size in `updates()`, so the
     /// session stays a 1:1 native capture at the new size). Still a no-op
     /// for a pinned size (`--width`/`--height`/`--hidpi` without a vd).
-    /// Debounced by the capture loop via `pending_resize` so a window drag
-    /// (many PDUs/sec) produces one resize, not one per tick. Both codec
+    /// The capture loop coalesces requests during a window drag. Both codec
     /// paths ride the same core deactivation-reactivation; on the EGFX
     /// (`--enable-h264`) path the capture loop additionally resets the
     /// per-connection surface/encoder state first so the post-reactivation
@@ -609,7 +662,7 @@ impl RdpServerDisplay for CaptureDisplay {
             client_h = adopted.height,
             prev_w = cur_w,
             prev_h = cur_h,
-            "client resized its window — resizing the session (debounced)"
+            "client resized its window — resizing the session"
         );
         self.pending_resize.request(adopted.width, adopted.height);
     }
@@ -808,7 +861,7 @@ impl CaptureDisplay {
         width: u16,
         height: u16,
     ) -> Result<Box<dyn RdpServerDisplayUpdates>> {
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", feature = "modern-capture"))]
         let inner: Box<dyn RdpServerDisplayUpdates + Send> = Box::new(
             macos::ScreenCaptureUpdates::start(
                 width,
@@ -831,6 +884,21 @@ impl CaptureDisplay {
             )
             .await?,
         );
+        #[cfg(all(target_os = "macos", not(feature = "modern-capture")))]
+        let inner: Box<dyn RdpServerDisplayUpdates + Send> =
+            Box::new(legacy::LegacyCaptureUpdates::new(
+                width,
+                height,
+                self.fps,
+                self.display_id,
+                self.screen_size_pts,
+                self.cursor_scale,
+                self.auto_size && !self.stretch,
+                self.pending_resize.clone(),
+                self.desktop_size.clone(),
+                self.suppress_next_adopt.clone(),
+                self.display_suppressed.clone(),
+            )?);
         #[cfg(not(target_os = "macos"))]
         let inner: Box<dyn RdpServerDisplayUpdates + Send> =
             Box::new(stub::StubUpdates::new(width, height)?);
@@ -900,7 +968,7 @@ fn split_strips(x: u16, y: u16, w: u16, h: u16) -> Vec<(u16, u16, u16, u16)> {
     out
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "modern-capture"))]
 mod macos {
     use super::*;
 
@@ -1692,6 +1760,10 @@ mod macos {
         }
     }
 }
+
+#[cfg(all(target_os = "macos", not(feature = "modern-capture")))]
+#[path = "capture/legacy.rs"]
+mod legacy;
 
 #[cfg(not(target_os = "macos"))]
 mod stub {

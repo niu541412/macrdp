@@ -78,6 +78,7 @@ pub struct MacRdpsnd {
     /// virtual display survives both, so audio must follow it, not
     /// `displays.first()` (which is the physical primary).
     target_display_id: Option<u32>,
+    legacy_audio_device: Option<String>,
 }
 
 impl MacRdpsnd {
@@ -87,6 +88,7 @@ impl MacRdpsnd {
         enable_aac: bool,
         aac_bitrate: u32,
         target_display_id: Option<u32>,
+        legacy_audio_device: Option<String>,
     ) -> Self {
         Self {
             sender: Arc::new(Mutex::new(None)),
@@ -97,6 +99,7 @@ impl MacRdpsnd {
             enable_aac,
             aac_bitrate,
             target_display_id,
+            legacy_audio_device,
         }
     }
 }
@@ -123,6 +126,7 @@ impl SoundServerFactory for MacRdpsnd {
             mute_on_minimize: self.mute_on_minimize,
             aac_bitrate: self.aac_bitrate,
             target_display_id: self.target_display_id,
+            legacy_audio_device: self.legacy_audio_device.clone(),
         })
     }
 
@@ -194,6 +198,7 @@ struct MacRdpsndBackend {
     aac_bitrate: u32,
     /// Display the audio SCStream binds to — see [`MacRdpsnd::target_display_id`].
     target_display_id: Option<u32>,
+    legacy_audio_device: Option<String>,
 }
 
 // Note: format negotiation (server-preference selection + the client-list
@@ -244,6 +249,7 @@ impl RdpsndServerHandler for MacRdpsndBackend {
         let mute_on_minimize = self.mute_on_minimize;
         let aac_bitrate = self.aac_bitrate;
         let target_display_id = self.target_display_id;
+        let legacy_audio_device = self.legacy_audio_device.clone();
         // Dedicated OS thread at USER_INTERACTIVE QoS for the entire
         // capture / resample / channel-send pipeline. Tokio workers ride
         // USER_INITIATED (see main.rs::boost_thread_qos) which a cargo
@@ -278,6 +284,7 @@ impl RdpsndServerHandler for MacRdpsndBackend {
                         use_aac,
                         aac_bitrate,
                         target_display_id,
+                        legacy_audio_device,
                     )
                     .await
                     {
@@ -319,7 +326,7 @@ fn boost_audio_qos() {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "modern-capture"))]
 #[allow(clippy::too_many_arguments)]
 async fn capture_loop(
     sender: Sender,
@@ -331,6 +338,7 @@ async fn capture_loop(
     use_aac: bool,
     aac_bitrate: u32,
     target_display_id: Option<u32>,
+    _legacy_audio_device: Option<String>,
 ) -> anyhow::Result<()> {
     use anyhow::{anyhow, Context};
     use rubato::Resampler;
@@ -770,6 +778,38 @@ async fn capture_loop(
     Ok(())
 }
 
+#[cfg(all(target_os = "macos", not(feature = "modern-capture")))]
+#[path = "audio/legacy.rs"]
+mod legacy;
+
+#[cfg(all(target_os = "macos", not(feature = "modern-capture")))]
+#[allow(clippy::too_many_arguments)]
+async fn capture_loop(
+    sender: Sender,
+    audio_sender: AudioSender,
+    generation: Arc<AtomicU64>,
+    my_gen: u64,
+    display_suppressed: Option<Arc<AtomicBool>>,
+    mute_on_minimize: bool,
+    use_aac: bool,
+    aac_bitrate: u32,
+    _target_display_id: Option<u32>,
+    legacy_audio_device: Option<String>,
+) -> anyhow::Result<()> {
+    legacy::capture_loop(
+        sender,
+        audio_sender,
+        generation,
+        my_gen,
+        display_suppressed,
+        mute_on_minimize,
+        use_aac,
+        aac_bitrate,
+        legacy_audio_device,
+    )
+    .await
+}
+
 #[cfg(not(target_os = "macos"))]
 #[allow(clippy::too_many_arguments)]
 async fn capture_loop(
@@ -782,6 +822,7 @@ async fn capture_loop(
     _use_aac: bool,
     _aac_bitrate: u32,
     _target_display_id: Option<u32>,
+    _legacy_audio_device: Option<String>,
 ) -> anyhow::Result<()> {
     Ok(())
 }
@@ -790,7 +831,7 @@ async fn capture_loop(
 /// Handles both planar (one buffer per channel) and interleaved (single buffer
 /// with `number_channels` channels) layouts; a mono source is duplicated. The
 /// result feeds the rubato resampler.
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "modern-capture"))]
 fn float_list_to_planar_f32_stereo(
     list: &screencapturekit::cm::AudioBufferList,
 ) -> (Vec<f32>, Vec<f32>) {
@@ -820,7 +861,7 @@ fn float_list_to_planar_f32_stereo(
 }
 
 /// Pull the first two channels out of an interleaved float32 buffer.
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "modern-capture"))]
 fn deinterleave_first_two_channels(bytes: &[u8], channels: usize) -> (Vec<f32>, Vec<f32>) {
     let frame_bytes = channels * 4;
     if frame_bytes == 0 {

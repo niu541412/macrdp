@@ -6,6 +6,12 @@ description = "Native RDP server for macOS"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[features]
+default = ["modern-capture"]
+modern-capture = ["dep:screencapturekit"]
+# Build on macOS 10.13 without linking the unavailable ScreenCaptureKit framework.
+legacy-capture = []
+
 [[bin]]
 name = "macrdp"
 path = "src/main.rs"
@@ -29,8 +35,8 @@ zeroize = "1"
 rubato = "0.16"  # 48 kHz SCK capture -> 44.1 kHz output, advertised to client
 
 # TLS for RDP security layer
-rustls = "0.23"
-tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 rcgen = "0.13"  # self-signed cert for first-run / dev
 rustls-pemfile = "2"  # read persisted cert.pem / key.pem on subsequent runs
 x509-cert = { version = "0.2", default-features = false }
@@ -87,7 +93,7 @@ objc2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSURL", "NSString", "NSBundle", "NSError", "NSDictionary", "NSNotification", "NSFileCoordinator", "NSFilePresenter", "NSOperation", "block2"] }
 block2 = "0.5"
 objc2-app-kit = { version = "0.2", features = ["NSCursor", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphics", "NSGraphicsContext", "NSPasteboard", "NSPasteboardItem", "NSWorkspace", "NSRunningApplication", "libc"] }
-screencapturekit = { version = "2.1", features = ["async"] }
+screencapturekit = { version = "2.1", features = ["async"], optional = true }
 
 # All ironrdp-* crates pinned to a specific upstream commit. The published
 # 0.x crates lag main by enough that several features we need (file
