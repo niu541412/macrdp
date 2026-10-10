@@ -153,7 +153,16 @@ fn rle_encode(plane: &[u8]) -> Vec<u8> {
     }
     // Last 4 bytes of the plane are copied raw, by spec/convention.
     out.extend_from_slice(&plane[body_end..]);
-    out
+    // The NSCodec decoder distinguishes an uncompressed plane by its exact
+    // pixel count. An RLE stream can grow when it contains many short runs;
+    // sending that expanded stream is invalid and leaves some clients with
+    // an unpainted (black) rectangle. MS-RDPNSC requires the raw plane in
+    // this case.
+    if out.len() >= n {
+        plane.to_vec()
+    } else {
+        out
+    }
 }
 
 #[cfg(test)]
@@ -181,7 +190,13 @@ mod tests {
         // 6 bytes of 7 -> body is plane[0..2] = [7, 7] -> short run of 2.
         // Tail: plane[2..6] = [7, 7, 7, 7].
         let plane = vec![7u8; 6];
-        assert_eq!(rle_encode(&plane), vec![7, 7, 0, 7, 7, 7, 7]);
+        assert_eq!(rle_encode(&plane), plane);
+    }
+
+    #[test]
+    fn rle_uses_raw_plane_when_short_runs_expand_it() {
+        let plane = [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6];
+        assert_eq!(rle_encode(&plane), plane);
     }
 
     #[test]
