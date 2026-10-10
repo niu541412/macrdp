@@ -87,13 +87,13 @@ impl Encoder {
         let tx_box = Box::new(tx);
         let tx_ptr = Box::as_ref(&tx_box) as *const mpsc::Sender<EncodedFrame> as *mut c_void;
 
-        // Default to full-range NV12 — verified to fix mstsc's washed/lighter
-        // image while keeping FreeRDP correct. Opt back out to video-range (let
-        // VT convert from BGRA) with MACRDP_H264_FULL_RANGE=0 for debugging.
-        let full_range = !matches!(
-            std::env::var("MACRDP_H264_FULL_RANGE").as_deref(),
-            Ok("0") | Ok("false") | Ok("FALSE")
-        );
+        // High Sierra was verified with VT's BGRA input path. Modern macOS
+        // defaults to full-range NV12 for accurate black levels in mstsc.
+        let full_range = match std::env::var("MACRDP_H264_FULL_RANGE").as_deref() {
+            Ok("0" | "false" | "FALSE") => false,
+            Ok("1" | "true" | "TRUE") => true,
+            _ => !cfg!(feature = "legacy-capture"),
+        };
         // Keyframe interval is a frame count; derive it from the requested
         // seconds and the frame rate. At least 1 (every frame an IDR).
         let keyframe_frames = (f64::from(fps) * f64::from(keyframe_secs)).round().max(1.0) as u32;
@@ -174,7 +174,13 @@ impl Encoder {
             self.fps,
             force_keyframe,
             self.full_range,
-        )
+        )?;
+        // High Sierra's VideoToolbox may keep submitted frames internally
+        // even with MaxFrameDelayCount=0. Complete the pending frame before
+        // the capture-side in-flight limit can stop further submissions.
+        #[cfg(feature = "legacy-capture")]
+        ffi::complete_frames(&self.inner)?;
+        Ok(())
     }
 
     /// Pull every encoded frame the callback has produced so far.
@@ -1143,7 +1149,7 @@ mod ffi {
         result
     }
 
-    #[allow(dead_code)] // only reached via Encoder::flush (shutdown / tests)
+    #[allow(dead_code)] // also used by the High Sierra capture path
     pub(super) fn complete_frames(guard: &SessionGuard) -> Result<()> {
         // Passing an invalid CMTime tells VT "complete *all* pending frames".
         // This is the documented sentinel value for "no deadline".

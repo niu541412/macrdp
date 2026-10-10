@@ -1,6 +1,6 @@
 # macOS 10.13 (High Sierra) build
 
-The 10.13 binary uses CoreGraphics for bitmap video and AudioQueue for audio.
+The 10.13 binary uses CoreGraphics for capture and AudioQueue for audio.
 It does not link ScreenCaptureKit or require the modern Swift toolchain.
 Use the release build for interactive sessions; the debug build is much slower
 when encoding bitmap updates.
@@ -10,9 +10,14 @@ MACOSX_DEPLOYMENT_TARGET=10.13 cargo build --release \
   --no-default-features --features legacy-capture
 ```
 
-The default feature set still uses modern capture. The 10.13 build rejects
-`--enable-h264` and `--virtual-display`. CoreGraphics capture requires an active
-display in the server user's GUI session.
+The default feature set still uses modern capture. The 10.13 build supports
+`--enable-h264` with VideoToolbox, and rejects `--virtual-display`. CoreGraphics
+capture requires an active display in the server user's GUI session. On the
+tested 10.13.6 Mac, `--enable-h264 --fps 20 --bitrate 4` gave smoother video
+than the bitmap path in Windows App. The legacy encoder explicitly completes
+each submitted frame because this version of VideoToolbox otherwise retained
+frames without delivering them. Clients that do not negotiate EGFX continue
+to receive bitmap updates.
 
 The client may request a different window size. The legacy capture backend
 preserves the Mac display's aspect ratio and centers it with black bars when
@@ -102,6 +107,11 @@ the following as `~/Library/LaunchAgents/com.user.macrdp.plist`, replacing
   <key>StandardErrorPath</key><string>/Users/jomic/Library/Logs/macrdp.err.log</string>
 </dict></plist>
 ```
+
+To use the tested H.264 mode, add these entries to `ProgramArguments` before
+loading the agent: `<string>--enable-h264</string>`,
+`<string>--fps</string><string>20</string>`, and
+`<string>--bitrate</string><string>4</string>`.
 
 After stopping any manually started server on port 3390, load the agent into
 B's **GUI** domain (not the SSH Background domain):

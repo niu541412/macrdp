@@ -2605,11 +2605,6 @@ async fn async_main() -> Result<()> {
                 "macOS 10.13 has no CGVirtualDisplay; create a separate user desktop with Screen Sharing, then start macrdp in that user's GUI session"
             ));
         }
-        if args.enable_h264 {
-            return Err(anyhow!(
-                "--enable-h264 is not wired to the legacy CoreGraphics capture backend; use bitmap mode"
-            ));
-        }
     }
 
     // Research spike (Phase-1b USB-redirection go/no-go): run the UserHCI probe

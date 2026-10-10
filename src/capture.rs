@@ -894,6 +894,7 @@ impl CaptureDisplay {
                 self.screen_size_pts,
                 self.cursor_scale,
                 self.auto_size && !self.stretch,
+                self.gfx.clone(),
                 self.pending_resize.clone(),
                 self.desktop_size.clone(),
                 self.suppress_next_adopt.clone(),

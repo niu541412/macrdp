@@ -138,6 +138,7 @@ pub struct LegacyCaptureUpdates {
     screen_size_pts: (f64, f64),
     cursor_scale: f64,
     preserve_aspect: bool,
+    gfx: Option<crate::h264::Gfx>,
     interval: tokio::time::Interval,
     pending: VecDeque<DisplayUpdate>,
     last_frame: Vec<u8>,
@@ -158,6 +159,7 @@ impl LegacyCaptureUpdates {
         screen_size_pts: (f64, f64),
         cursor_scale: f64,
         preserve_aspect: bool,
+        gfx: Option<crate::h264::Gfx>,
         pending_resize: PendingResize,
         desktop_size: SharedDesktopSize,
         suppress_next_adopt: Arc<AtomicBool>,
@@ -191,6 +193,7 @@ impl LegacyCaptureUpdates {
             screen_size_pts,
             cursor_scale,
             preserve_aspect,
+            gfx,
             interval,
             pending: VecDeque::new(),
             last_frame: Vec::new(),
@@ -281,6 +284,9 @@ impl RdpServerDisplayUpdates for LegacyCaptureUpdates {
     async fn next_update(&mut self) -> Result<Option<DisplayUpdate>> {
         loop {
             if let Some((width, height)) = self.pending_resize.take_legacy_ready() {
+                if let Some(gfx) = &self.gfx {
+                    gfx.reset_for_live_resize();
+                }
                 self.width = width;
                 self.height = height;
                 self.last_frame.clear();
@@ -316,6 +322,13 @@ impl RdpServerDisplayUpdates for LegacyCaptureUpdates {
             .await
             .context("legacy capture worker panicked")??;
             self.desktop_size.set_letterbox(letterbox);
+            if let Some(gfx) = &self.gfx {
+                match gfx.submit_bgra(&frame, usize::from(width) * 4, false) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(error) => tracing::warn!(?error, "legacy EGFX frame submission failed"),
+                }
+            }
             self.enqueue_frame(frame);
         }
     }
